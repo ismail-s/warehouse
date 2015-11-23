@@ -71,10 +71,10 @@ def cli():
 
 
 @pytest.fixture(scope="session")
-def database(request, postgresql_proc):
+def database(request):
     config = get_config(request)
-    pg_host = postgresql_proc.host
-    pg_port = postgresql_proc.port
+    pg_host = config.postgresql.host
+    pg_port = config.postgresql.port
     pg_user = config.postgresql.user
     pg_db = config.postgresql.db
 
@@ -93,6 +93,7 @@ def database(request, postgresql_proc):
 def app_config(database):
     config = configure(
         settings={
+            "warehouse.prevent_esi": True,
             "warehouse.token": "insecure token",
             "camo.url": "http://localhost:9000/",
             "camo.key": "insecure key",
@@ -101,6 +102,7 @@ def app_config(database):
             "database.url": database,
             "docs.url": "http://docs.example.com/",
             "download_stats.url": "redis://localhost:0/",
+            "elasticsearch.url": "https://localhost/warehouse",
             "files.backend": "warehouse.packaging.services.LocalFileStorage",
             "sessions.secret": "123456",
             "sessions.url": "redis://localhost:0/",

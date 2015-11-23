@@ -1,0 +1,10 @@
+Sitemap: {{ request.route_url("index.sitemap.xml") }}
+
+User-agent: *
+Disallow: /simple/
+Disallow: /packages/
+Disallow: /_esi/
+Disallow: /pypi/*/json
+Disallow: /pypi/*/*/json
+Disallow: /pypi*?
+

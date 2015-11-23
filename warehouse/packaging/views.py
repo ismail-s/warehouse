@@ -27,12 +27,11 @@ from warehouse.packaging.models import Release, File, Role
     route_name="packaging.project",
     renderer="packaging/detail.html",
     decorator=[
-        cache_control(
+        origin_cache(
             1 * 24 * 60 * 60,                         # 1 day
             stale_while_revalidate=1 * 24 * 60 * 60,  # 1 day
-            stale_if_error=1 * 24 * 60 * 60,          # 1 day
+            stale_if_error=5 * 24 * 60 * 60,          # 5 days
         ),
-        origin_cache(7 * 24 * 60 * 60),   # 7 days
     ],
 )
 def project_detail(project, request):
@@ -42,9 +41,14 @@ def project_detail(project, request):
         )
 
     try:
-        release = project.releases.order_by(
-            Release._pypi_ordering.desc()
-        ).limit(1).one()
+        release = (
+            request.db.query(Release)
+                      .options(joinedload(Release.uploader))
+                      .filter(Release.project == project)
+                      .order_by(Release._pypi_ordering.desc())
+                      .limit(1)
+                      .one()
+        )
     except NoResultFound:
         return HTTPNotFound()
 
@@ -55,12 +59,11 @@ def project_detail(project, request):
     route_name="packaging.release",
     renderer="packaging/detail.html",
     decorator=[
-        cache_control(
-            7 * 24 * 60 * 60,                         # 7 days
+        origin_cache(
+            1 * 24 * 60 * 60,                         # 1 day
             stale_while_revalidate=1 * 24 * 60 * 60,  # 1 day
-            stale_if_error=1 * 24 * 60 * 60,          # 1 day
+            stale_if_error=5 * 24 * 60 * 60,          # 5 days
         ),
-        origin_cache(30 * 24 * 60 * 60),  # 30 days
     ],
 )
 def release_detail(release, request):
@@ -74,10 +77,11 @@ def release_detail(release, request):
     # Get all of the registered versions for this Project, in order of newest
     # to oldest.
     all_releases = (
-        project.releases
-        .with_entities(Release.version, Release.created)
-        .order_by(Release._pypi_ordering.desc())
-        .all()
+        request.db.query(Release)
+                  .filter(Release.project == project)
+                  .with_entities(Release.version, Release.created)
+                  .order_by(Release._pypi_ordering.desc())
+                  .all()
     )
 
     # Get all of the maintainers for this project.
@@ -93,29 +97,49 @@ def release_detail(release, request):
         )
     ]
 
-    stats_svc = request.find_service(IDownloadStatService)
-
     return {
         "project": project,
         "release": release,
         "files": release.files.all(),
         "all_releases": all_releases,
         "maintainers": maintainers,
-        "download_stats": {
-            "daily": stats_svc.get_daily_stats(project.name),
-            "weekly": stats_svc.get_weekly_stats(project.name),
-            "monthly": stats_svc.get_monthly_stats(project.name),
-        },
+    }
+
+
+@view_config(
+    route_name="esi.project-stats",
+    renderer="packaging/includes/project-stats.html",
+    decorator=[
+        origin_cache(
+            15 * 60,                         # 15 Minutes
+            stale_while_revalidate=30 * 60,  # 30 minutes
+            stale_if_error=30 * 60,          # 30 minutes
+        ),
+    ],
+)
+def project_stats(project, request):
+    if project.name != request.matchdict.get("name", project.name):
+        return HTTPMovedPermanently(
+            request.current_route_path(name=project.name),
+        )
+
+    stats_svc = request.find_service(IDownloadStatService)
+
+    return {
+        "daily": stats_svc.get_daily_stats(project.name),
+        "weekly": stats_svc.get_weekly_stats(project.name),
+        "monthly": stats_svc.get_monthly_stats(project.name),
     }
 
 
 @view_config(
     route_name="packaging.file",
     decorator=[
-        cache_control(
-            365 * 24 * 60 * 60,                        # 1 year
-            stale_while_revalidate=30 * 24 * 60 * 60,  # 30 days
-            stale_if_error=30 * 24 * 60 * 60,          # 30 days
+        cache_control(365 * 24 * 60 * 60),            # 1 year
+        origin_cache(
+            365 * 24 * 60 * 60,                       # 1 year
+            stale_while_revalidate=1 * 24 * 60 * 60,  # 1 day
+            stale_if_error=5 * 24 * 60 * 60,          # 5 days
         ),
     ],
 )
@@ -164,10 +188,7 @@ def packages(request):
         content_length = file_.size
 
     return Response(
-        # If we have a wsgi.file_wrapper, we'll want to use that so that, if
-        # possible, this will use an optimized method of sending. Otherwise
-        # we'll just use Pyramid's FileIter as a fallback.
-        app_iter=request.environ.get("wsgi.file_wrapper", FileIter)(f),
+        app_iter=FileIter(f),
         # We use application/octet-stream instead of something nicer because
         # different HTTP libraries will treat different combinations of
         # Content-Type and Content-Encoding differently. The only thing that

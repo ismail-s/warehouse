@@ -12,7 +12,6 @@
 
 from unittest import mock
 
-import fs.opener
 import pretend
 import pytest
 import zope.interface
@@ -217,24 +216,26 @@ def test_find_service_factory(monkeypatch, factory):
 
 
 @pytest.mark.parametrize(
-    ("settings", "environment"),
+    ("settings", "environment", "other_settings"),
     [
-        (None, config.Environment.production),
-        ({}, config.Environment.production),
-        ({"my settings": "the settings value"}, config.Environment.production),
-        (None, config.Environment.development),
-        ({}, config.Environment.development),
+        (None, config.Environment.production, {}),
+        ({}, config.Environment.production, {}),
+        (
+            {"my settings": "the settings value"},
+            config.Environment.production,
+            {},
+        ),
+        (None, config.Environment.development, {}),
+        ({}, config.Environment.development, {}),
         (
             {"my settings": "the settings value"},
             config.Environment.development,
+            {},
         ),
+        (None, config.Environment.production, {"warehouse.theme": "my_theme"}),
     ],
 )
-def test_configure(monkeypatch, settings, environment):
-    fs_obj = pretend.stub()
-    opener = pretend.call_recorder(lambda path, create_dir: fs_obj)
-    monkeypatch.setattr(fs.opener, "fsopendir", opener)
-
+def test_configure(monkeypatch, settings, environment, other_settings):
     json_renderer_obj = pretend.stub()
     json_renderer_cls = pretend.call_recorder(lambda **kw: json_renderer_obj)
     monkeypatch.setattr(renderers, "JSON", json_renderer_cls)
@@ -258,7 +259,7 @@ def test_configure(monkeypatch, settings, environment):
                 "dirs.packages": "/srv/data/pypi/packages/",
             }
 
-    configurator_settings = {}
+    configurator_settings = other_settings.copy()
     configurator_obj = pretend.stub(
         registry=FakeRegistry(),
         include=pretend.call_recorder(lambda include: None),
@@ -274,7 +275,7 @@ def test_configure(monkeypatch, settings, environment):
         ),
         add_tween=pretend.call_recorder(lambda tween_factory: None),
         add_static_view=pretend.call_recorder(
-            lambda name, path, cachebust: None
+            lambda name, path, cache_max_age, cachebust: None
         ),
         scan=pretend.call_recorder(lambda ignore: None),
     )
@@ -282,8 +283,8 @@ def test_configure(monkeypatch, settings, environment):
     monkeypatch.setattr(config, "Configurator", configurator_cls)
 
     cachebuster_obj = pretend.stub()
-    cachebuster_cls = pretend.call_recorder(lambda m, cache: cachebuster_obj)
-    monkeypatch.setattr(config, "WarehouseCacheBuster", cachebuster_cls)
+    cachebuster_cls = pretend.call_recorder(lambda p, reload: cachebuster_obj)
+    monkeypatch.setattr(config, "ManifestCacheBuster", cachebuster_cls)
 
     transaction_manager = pretend.stub()
     transaction = pretend.stub(
@@ -359,6 +360,7 @@ def test_configure(monkeypatch, settings, environment):
             pretend.call(".legacy.action_routing"),
             pretend.call(".i18n"),
             pretend.call(".db"),
+            pretend.call(".search"),
             pretend.call(".aws"),
             pretend.call(".celery"),
             pretend.call(".sessions"),
@@ -369,13 +371,25 @@ def test_configure(monkeypatch, settings, environment):
             pretend.call(".packaging"),
             pretend.call(".redirects"),
             pretend.call(".routes"),
+            pretend.call(".raven"),
+        ]
+        +
+        [
+            pretend.call(x) for x in [
+                configurator_settings.get("warehouse.theme"),
+            ]
+            if x
         ]
     )
     assert configurator_obj.add_jinja2_renderer.calls == [
         pretend.call(".html"),
+        pretend.call(".txt"),
+        pretend.call(".xml"),
     ]
     assert configurator_obj.add_jinja2_search_path.calls == [
         pretend.call("warehouse:templates", name=".html"),
+        pretend.call("warehouse:templates", name=".txt"),
+        pretend.call("warehouse:templates", name=".xml"),
     ]
     assert configurator_obj.add_settings.calls == [
         pretend.call({"jinja2.newstyle": True}),
@@ -388,16 +402,18 @@ def test_configure(monkeypatch, settings, environment):
         pretend.call({
             "csp": {
                 "default-src": ["'none'"],
+                "font-src": ["'self'", "fonts.gstatic.com"],
                 "frame-ancestors": ["'none'"],
                 "img-src": [
                     "'self'",
                     "http://camo.example.com/",
                     "https://secure.gravatar.com",
                 ],
-                "referrer": ["cross-origin"],
+                "referrer": ["origin-when-cross-origin"],
                 "reflected-xss": ["block"],
+                "report-uri": [None],
                 "script-src": ["'self'"],
-                "style-src": ["'self'"],
+                "style-src": ["'self'", "fonts.googleapis.com"],
             },
         }),
     ]
@@ -414,22 +430,19 @@ def test_configure(monkeypatch, settings, environment):
         pretend.call("warehouse.config.content_security_policy_tween_factory"),
         pretend.call("warehouse.config.require_https_tween_factory"),
     ]
-    assert configurator_obj.registry["filesystems"] == {"packages": fs_obj}
     assert configurator_obj.add_static_view.calls == [
         pretend.call(
             name="static",
-            path="warehouse:static",
+            path="warehouse:static/dist/",
+            cache_max_age=0,
             cachebust=cachebuster_obj,
         ),
     ]
     assert cachebuster_cls.calls == [
-        pretend.call("warehouse:static/manifest.json", cache=True),
+        pretend.call("warehouse:static/dist/manifest.json", reload=False),
     ]
     assert configurator_obj.scan.calls == [
         pretend.call(ignore=["warehouse.migrations.env", "warehouse.wsgi"]),
-    ]
-    assert opener.calls == [
-        pretend.call("/srv/data/pypi/packages/", create_dir=True),
     ]
     assert configurator_obj.add_renderer.calls == [
         pretend.call("json", json_renderer_obj),

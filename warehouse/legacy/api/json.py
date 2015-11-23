@@ -25,12 +25,12 @@ from warehouse.packaging.models import File, Release, JournalEntry
     route_name="legacy.api.json.project",
     renderer="json",
     decorator=[
-        cache_control(
-            1 * 24 * 60 * 60,                         # 1 day
-            stale_while_revalidate=1 * 24 * 60 * 60,  # 1 day
-            stale_if_error=1 * 24 * 60 * 60,          # 1 day
+        cache_control(15 * 60),               # 15 minutes
+        origin_cache(
+            1 * 24 * 60 * 60,                 # 1 day
+            stale_while_revalidate=5 * 60,    # 5 minutes
+            stale_if_error=1 * 24 * 60 * 60,  # 1 day
         ),
-        origin_cache(7 * 24 * 60 * 60),   # 7 days
     ],
 )
 def json_project(project, request):
@@ -40,9 +40,13 @@ def json_project(project, request):
         )
 
     try:
-        release = project.releases.order_by(
-            Release._pypi_ordering.desc()
-        ).limit(1).one()
+        release = (
+            request.db.query(Release)
+                      .filter(Release.project == project)
+                      .order_by(Release._pypi_ordering.desc())
+                      .limit(1)
+                      .one()
+        )
     except NoResultFound:
         return HTTPNotFound()
 
@@ -53,12 +57,12 @@ def json_project(project, request):
     route_name="legacy.api.json.release",
     renderer="json",
     decorator=[
-        cache_control(
-            7 * 24 * 60 * 60,                         # 7 days
-            stale_while_revalidate=1 * 24 * 60 * 60,  # 1 day
-            stale_if_error=1 * 24 * 60 * 60,          # 1 day
+        cache_control(15 * 60),               # 15 minutes
+        origin_cache(
+            1 * 24 * 60 * 60,                 # 1 day
+            stale_while_revalidate=5 * 60,    # 5 minutes
+            stale_if_error=1 * 24 * 60 * 60,  # 1 day
         ),
-        origin_cache(30 * 24 * 60 * 60),  # 30 days
     ],
 )
 def json_release(release, request):
@@ -90,7 +94,7 @@ def json_release(release, request):
                   .filter(JournalEntry.name == project.name)
                   .scalar()
     )
-    request.response.headers["X-PyPI-Last-Serial"] = serial or 0
+    request.response.headers["X-PyPI-Last-Serial"] = str(serial or 0)
 
     # Get all of the releases and files for this project.
     release_files = (

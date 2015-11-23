@@ -24,18 +24,18 @@ from warehouse.packaging.models import JournalEntry, File, Project, Release
     route_name="legacy.api.simple.index",
     renderer="legacy/api/simple/index.html",
     decorator=[
-        cache_control(
-            10 * 60,                                  # 10 minutes
-            stale_while_revalidate=1 * 24 * 60 * 60,  # 1 day
-            stale_if_error=1 * 24 * 60 * 60,          # 1 day
+        cache_control(10 * 60),               # 10 minutes
+        origin_cache(
+            1 * 24 * 60 * 60,                 # 1 day
+            stale_while_revalidate=5 * 60,    # 5 minutes
+            stale_if_error=1 * 24 * 60 * 60,  # 1 day
         ),
-        origin_cache(7 * 24 * 60 * 60),   # 7 days
     ],
 )
 def simple_index(request):
     # Get the latest serial number
     serial = request.db.query(func.max(JournalEntry.id)).scalar() or 0
-    request.response.headers["X-PyPI-Last-Serial"] = serial
+    request.response.headers["X-PyPI-Last-Serial"] = str(serial)
 
     # Fetch the name and normalized name for all of our projects
     projects = (
@@ -51,12 +51,12 @@ def simple_index(request):
     route_name="legacy.api.simple.detail",
     renderer="legacy/api/simple/detail.html",
     decorator=[
-        cache_control(
-            10 * 60,                                  # 10 minutes
-            stale_while_revalidate=1 * 24 * 60 * 60,  # 1 day
-            stale_if_error=1 * 24 * 60 * 60,          # 1 day
+        cache_control(10 * 60),               # 10 minutes
+        origin_cache(
+            1 * 24 * 60 * 60,                 # 1 day
+            stale_while_revalidate=5 * 60,    # 5 minutes
+            stale_if_error=1 * 24 * 60 * 60,  # 1 day
         ),
-        origin_cache(7 * 24 * 60 * 60),   # 7 days
     ],
 )
 def simple_detail(project, request):
@@ -75,7 +75,7 @@ def simple_detail(project, request):
                   .filter(JournalEntry.name == project.name)
                   .scalar()
     )
-    request.response.headers["X-PyPI-Last-Serial"] = serial or 0
+    request.response.headers["X-PyPI-Last-Serial"] = str(serial or 0)
 
     # Get all of the files for this project.
     files = (
@@ -83,7 +83,11 @@ def simple_detail(project, request):
         .options(joinedload(File.release))
         .filter(
             File.name == project.name,
-            File.version.in_(project.releases.with_entities(Release.version))
+            File.version.in_(
+                request.db.query(Release)
+                          .filter(Release.project == project)
+                          .with_entities(Release.version)
+            )
         )
         .order_by(File.filename)
         .all()

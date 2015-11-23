@@ -1,16 +1,20 @@
-#!/usr/bin/env python3
+#!/bin/bash
+set -e
+set -x
 
-import os
-import os.path
+# Write out what commit we were built from.
+if [[ $SOURCE_VERSION ]]; then
+    echo "$SOURCE_VERSION" > warehouse/.commit
+fi
 
-base_dir = os.path.abspath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..",
-    "warehouse",
-))
+# Create our requirements.txt file that Heroku will use to build.
+echo "-r requirements/main.txt" > requirements.txt
+echo "-r requirements/deploy.txt" >> requirements.txt
+echo "-r requirements/theme.txt" >> requirements.txt
 
-source_version = os.environ.get("SOURCE_VERSION")
+# We need to install gulp and bower
+npm install -g gulp bower
+npm install
 
-if source_version:
-    with open(os.path.join(base_dir, ".commit"), "w") as fp:
-        fp.write(source_version)
+# Build our Static files before doing anything else.
+gulp dist

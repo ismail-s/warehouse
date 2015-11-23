@@ -13,8 +13,13 @@
 import datetime
 
 import pretend
+import pytest
 
-from warehouse.views import forbidden, index, exception_view
+from warehouse import views
+from warehouse.views import (
+    forbidden, index, httpexception_view, robotstxt, current_user_indicator,
+    search,
+)
 
 from ..common.db.packaging import (
     ProjectFactory, ReleaseFactory, FileFactory,
@@ -22,10 +27,10 @@ from ..common.db.packaging import (
 from ..common.db.accounts import UserFactory
 
 
-def test_exception_view():
+def test_httpexception_view():
     response = context = pretend.stub()
     request = pretend.stub()
-    assert exception_view(context, request) is response
+    assert httpexception_view(context, request) is response
 
 
 class TestForbiddenView:
@@ -52,6 +57,11 @@ class TestForbiddenView:
             "/accounts/login/?next=/foo/bar/%3Fb%3Ds"
 
 
+def test_robotstxt(pyramid_request):
+    assert robotstxt(pyramid_request) == {}
+    assert pyramid_request.response.content_type == "text/plain"
+
+
 class TestIndex:
 
     def test_index(self, db_request):
@@ -70,9 +80,80 @@ class TestIndex:
 
         assert index(db_request) == {
             # assert that ordering is correct
-            'latest_updated_releases': [release2, release1],
+            'latest_releases': [release2, release1],
+            'top_projects': [release2],
             'num_projects': 1,
-            'num_users': 1,
+            'num_users': 3,
             'num_releases': 2,
             'num_files': 1,
         }
+
+
+def test_esi_current_user_indicator():
+    assert current_user_indicator(pretend.stub()) == {}
+
+
+class TestSearch:
+
+    @pytest.mark.parametrize("page", [None, 1, 5])
+    def test_with_a_query(self, monkeypatch, page):
+        params = {"q": "foo bar"}
+        if page is not None:
+            params["page"] = page
+        query = pretend.stub()
+        request = pretend.stub(
+            es=pretend.stub(
+                query=pretend.call_recorder(lambda *a, **kw: query),
+            ),
+            params=params,
+        )
+
+        page_obj = pretend.stub()
+        page_cls = pretend.call_recorder(lambda *a, **kw: page_obj)
+        monkeypatch.setattr(views, "ElasticsearchPage", page_cls)
+
+        url_maker = pretend.stub()
+        url_maker_factory = pretend.call_recorder(lambda request: url_maker)
+        monkeypatch.setattr(views, "paginate_url_factory", url_maker_factory)
+
+        assert search(request) == {"page": page_obj}
+        assert page_cls.calls == [
+            pretend.call(query, url_maker=url_maker, page=page or 1),
+        ]
+        assert url_maker_factory.calls == [pretend.call(request)]
+        assert request.es.query.calls == [
+            pretend.call(
+                "multi_match",
+                query="foo bar",
+                fields=[
+                    "name", "version", "author", "author_email", "maintainer",
+                    "maintainer_email", "home_page", "license", "summary",
+                    "description", "keywords", "platform", "download_url",
+                ],
+            ),
+        ]
+
+    @pytest.mark.parametrize("page", [None, 1, 5])
+    def test_without_a_query(self, monkeypatch, page):
+        params = {}
+        if page is not None:
+            params["page"] = page
+        query = pretend.stub()
+        request = pretend.stub(
+            es=pretend.stub(query=lambda: query),
+            params=params,
+        )
+
+        page_obj = pretend.stub()
+        page_cls = pretend.call_recorder(lambda *a, **kw: page_obj)
+        monkeypatch.setattr(views, "ElasticsearchPage", page_cls)
+
+        url_maker = pretend.stub()
+        url_maker_factory = pretend.call_recorder(lambda request: url_maker)
+        monkeypatch.setattr(views, "paginate_url_factory", url_maker_factory)
+
+        assert search(request) == {"page": page_obj}
+        assert page_cls.calls == [
+            pretend.call(query, url_maker=url_maker, page=page or 1),
+        ]
+        assert url_maker_factory.calls == [pretend.call(request)]

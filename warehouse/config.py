@@ -14,7 +14,6 @@ import enum
 import os
 import shlex
 
-import fs.opener
 import pyramid_services
 import transaction
 import zope.interface
@@ -22,10 +21,10 @@ import zope.interface
 from pyramid import renderers
 from pyramid.config import Configurator as _Configurator
 from pyramid.response import Response
+from pyramid.static import ManifestCacheBuster
 from pyramid_rpc.xmlrpc import XMLRPCRenderer
 
 from warehouse import __commit__
-from warehouse.utils.static import WarehouseCacheBuster
 from warehouse.utils.wsgi import ProxyFixer, VhmRootRemover
 
 
@@ -54,7 +53,11 @@ class Configurator(_Configurator):
 
 def content_security_policy_tween_factory(handler, registry):
     policy = registry.settings.get("csp", {})
-    policy = "; ".join([" ".join([k] + v) for k, v in sorted(policy.items())])
+    policy = "; ".join([
+        " ".join([k] + [v2 for v2 in v if v2 is not None])
+        for k, v in sorted(policy.items())
+        if [v2 for v2 in v if v2 is not None]
+    ])
 
     def content_security_policy_tween(request):
         resp = handler(request)
@@ -154,20 +157,24 @@ def configure(settings=None):
 
     # Pull in default configuration from the environment.
     maybe_set(settings, "warehouse.token", "WAREHOUSE_TOKEN")
+    maybe_set(settings, "warehouse.theme", "WAREHOUSE_THEME")
     maybe_set(settings, "site.name", "SITE_NAME", default="Warehouse")
     maybe_set(settings, "aws.key_id", "AWS_ACCESS_KEY_ID")
     maybe_set(settings, "aws.secret_key", "AWS_SECRET_ACCESS_KEY")
     maybe_set(settings, "aws.region", "AWS_REGION")
     maybe_set(settings, "celery.broker_url", "AMQP_URL")
     maybe_set(settings, "celery.result_url", "REDIS_URL")
+    maybe_set(settings, "csp.report_uri", "CSP_REPORT_URI")
     maybe_set(settings, "database.url", "DATABASE_URL")
+    maybe_set(settings, "elasticsearch.url", "ELASTICSEARCH_URL")
+    maybe_set(settings, "sentry.dsn", "SENTRY_DSN")
+    maybe_set(settings, "sentry.transport", "SENTRY_TRANSPORT")
     maybe_set(settings, "sessions.url", "REDIS_URL")
     maybe_set(settings, "download_stats.url", "REDIS_URL")
     maybe_set(settings, "sessions.secret", "SESSION_SECRET")
     maybe_set(settings, "camo.url", "CAMO_URL")
     maybe_set(settings, "camo.key", "CAMO_KEY")
     maybe_set(settings, "docs.url", "DOCS_URL")
-    maybe_set(settings, "dirs.documentation", "DOCS_DIR")
     maybe_set_compound(settings, "files", "backend", "FILES_BACKEND")
     maybe_set_compound(settings, "origin_cache", "backend", "ORIGIN_CACHE")
 
@@ -219,6 +226,13 @@ def configure(settings=None):
     # assume that all templates will be using Jinja.
     config.add_jinja2_renderer(".html")
 
+    # Sometimes our files are .txt files and we still want to use Jinja2 to
+    # render them.
+    config.add_jinja2_renderer(".txt")
+
+    # Anytime we want to render a .xml template, we'll also use Jinja.
+    config.add_jinja2_renderer(".xml")
+
     # We'll want to configure some filters for Jinja2 as well.
     filters = config.get_settings().setdefault("jinja2.filters", {})
     filters.setdefault("readme", "warehouse.filters:readme_renderer")
@@ -227,10 +241,13 @@ def configure(settings=None):
     # We also want to register some global functions for Jinja
     jglobals = config.get_settings().setdefault("jinja2.globals", {})
     jglobals.setdefault("gravatar", "warehouse.utils.gravatar:gravatar")
+    jglobals.setdefault("esi_include", "warehouse.cache.origin:esi_include")
 
     # We'll store all of our templates in one location, warehouse/templates
     # so we'll go ahead and add that to the Jinja2 search path.
     config.add_jinja2_search_path("warehouse:templates", name=".html")
+    config.add_jinja2_search_path("warehouse:templates", name=".txt")
+    config.add_jinja2_search_path("warehouse:templates", name=".xml")
 
     # We want to configure our JSON renderer to sort the keys, and also to use
     # an ultra compact serialization format.
@@ -271,6 +288,8 @@ def configure(settings=None):
     # Register the configuration for the PostgreSQL database.
     config.include(".db")
 
+    config.include(".search")
+
     # Register the support for AWS
     config.include(".aws")
 
@@ -303,16 +322,18 @@ def configure(settings=None):
     config.add_settings({
         "csp": {
             "default-src": ["'none'"],
+            "font-src": ["'self'", "fonts.gstatic.com"],
             "frame-ancestors": ["'none'"],
             "img-src": [
                 "'self'",
                 config.registry.settings["camo.url"],
                 "https://secure.gravatar.com",
             ],
-            "referrer": ["cross-origin"],
+            "referrer": ["origin-when-cross-origin"],
             "reflected-xss": ["block"],
+            "report-uri": [config.registry.settings.get("csp.report_uri")],
             "script-src": ["'self'"],
-            "style-src": ["'self'"],
+            "style-src": ["'self'", "fonts.googleapis.com"],
         },
     })
     config.add_tween("warehouse.config.content_security_policy_tween_factory")
@@ -321,22 +342,15 @@ def configure(settings=None):
     # sent via POST.
     config.add_tween("warehouse.config.require_https_tween_factory")
 
-    # Configure the filesystems we use.
-    config.registry["filesystems"] = {}
-    for key, path in {
-            k[5:]: v
-            for k, v in config.registry.settings.items()
-            if k.startswith("dirs.")}.items():
-        config.registry["filesystems"][key] = \
-            fs.opener.fsopendir(path, create_dir=True)
-
     # Enable Warehouse to service our static files
     config.add_static_view(
         name="static",
-        path="warehouse:static",
-        cachebust=WarehouseCacheBuster(
-            "warehouse:static/manifest.json",
-            cache=not config.registry.settings["pyramid.reload_assets"],
+        path="warehouse:static/dist/",
+        # TODO: Remove this once we have cache busting completely working
+        cache_max_age=0,
+        cachebust=ManifestCacheBuster(
+            "warehouse:static/dist/manifest.json",
+            reload=config.registry.settings["pyramid.reload_assets"],
         ),
     )
 
@@ -349,6 +363,14 @@ def configure(settings=None):
 
     # Protect against cache poisoning via the X-Vhm-Root headers.
     config.add_wsgi_middleware(VhmRootRemover)
+
+    # We want Raven to be the last things we add here so that it's the outer
+    # most WSGI middleware.
+    config.include(".raven")
+
+    # Add our theme if one was configured
+    if config.get_settings().get("warehouse.theme"):
+        config.include(config.get_settings()["warehouse.theme"])
 
     # Scan everything for configuration
     config.scan(ignore=["warehouse.migrations.env", "warehouse.wsgi"])

@@ -5,18 +5,23 @@
 *.egg
 .eggs/
 
-.tox/
 .cache/
 .coverage
+.state
 
 docs/_build/
 build/
-dist/
+dist/*.tar.gz
+dist/*.whl
 htmlcov/
 
 node_modules/
 
 dev/example.sql
-data/
+./data/
 
 warehouse/.commit
+warehouse/static/components
+warehouse/static/dist
+
+requirements.txt

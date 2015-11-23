@@ -1,2 +1,2 @@
-web: bin/fastly-config && bin/start-stunnel bin/start-nginx newrelic-admin run-program gunicorn -c conf/gunicorn.conf -b unix:/tmp/nginx.socket --preload warehouse.wsgi
-worker: bin/start-stunnel newrelic-admin run-program celery -A warehouse worker -l info
+web: bin/redis-tls bin/fastly-config && bin/redis-tls gunicorn -b 0.0.0.0:$PORT -n warehouse -k gevent --preload warehouse.wsgi
+worker: bin/redis-tls celery -A warehouse worker -l info

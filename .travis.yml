@@ -1,22 +1,33 @@
 language: python
-python: 3.4
+python: 3.5.0
 
+dist: trusty
 sudo: false
+
+addons:
+  postgresql: "9.4"
+
+services:
+  - postgresql
 
 cache:
   directories:
     - ~/.cache/pip
 
-env:
-  - TOXENV=py34 TOXARGS="-- --dbfixtures-config .travis/dbfixtures.conf"
-  - TOXENV=pep8
-  - TOXENV=docs
-  - TOXENV=packaging
-  - TOXENV=translations
+install:
+  - pip install -U pip setuptools wheel codecov
+  - pip install -r requirements/docs.txt -r requirements/lint.txt -r requirements/main.txt -r requirements/tests.txt
+  - npm install bower gulp
+  - npm install
 
-install: pip install -U pip wheel tox codecov
+script:
+  - gulp dist
+  - bin/tests --dbfixtures-config tests/dbfixtures.travis.conf
 
-script: tox $TOXARGS
+matrix:
+  include:
+    - script: make lint BINDIR="$(dirname $(which python))"
+    - script: make docs BINDIR="$(dirname $(which python))"
 
 after_success: codecov
 

@@ -28,6 +28,7 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from warehouse import db
 from warehouse.accounts.models import User
 from warehouse.classifiers.models import Classifier
+from warehouse.sitemap.models import SitemapMixin
 from warehouse.utils.attrs import make_repr
 
 
@@ -69,7 +70,7 @@ class ProjectFactory:
             raise KeyError from None
 
 
-class Project(db.ModelBase):
+class Project(SitemapMixin, db.ModelBase):
 
     __tablename__ = "packages"
     __table_args__ = (
@@ -87,24 +88,38 @@ class Project(db.ModelBase):
     autohide = Column(Boolean, server_default=sql.true())
     comments = Column(Boolean, server_default=sql.true())
     bugtrack_url = Column(Text)
-    hosting_mode = Column(Text, nullable=False, server_default="pypi-explicit")
+    hosting_mode = Column(Text, nullable=False, server_default="pypi-only")
     created = Column(
         DateTime(timezone=False),
         nullable=False,
         server_default=sql.func.now(),
     )
     has_docs = Column(Boolean)
+    upload_limit = Column(Integer, nullable=True)
+
+    users = orm.relationship(
+        User,
+        secondary=Role.__table__,
+        backref="projects",
+    )
 
     releases = orm.relationship(
         "Release",
         backref="project",
         cascade="all, delete-orphan",
-        lazy="dynamic",
+        order_by=lambda: Release._pypi_ordering.desc(),
     )
 
     def __getitem__(self, version):
+        session = orm.object_session(self)
+
         try:
-            return self.releases.filter(Release.version == version).one()
+            return (
+                session.query(Release)
+                       .filter((Release.project == self) &
+                               (Release.version == version))
+                       .one()
+            )
         except NoResultFound:
             raise KeyError from None
 
@@ -280,6 +295,30 @@ class Release(db.ModelBase):
 
     _project_urls = _dependency_relation(DependencyKind.project_url)
     project_urls = association_proxy("_project_urls", "specifier")
+
+    uploader = orm.relationship(
+        "User",
+        secondary=lambda: JournalEntry.__table__,
+        primaryjoin=lambda: (
+            (JournalEntry.name == orm.foreign(Release.name)) &
+            (JournalEntry.version == orm.foreign(Release.version)) &
+            (JournalEntry.action == "new release")),
+        secondaryjoin=lambda: (
+            (User.username == orm.foreign(JournalEntry._submitted_by))
+        ),
+        order_by=lambda: JournalEntry.submitted_date.desc(),
+        # TODO: We have uselist=False here which raises a warning because
+        # multiple items were returned. This should only be temporary because
+        # we should add a nullable FK to JournalEntry so we don't need to rely
+        # on ordering and implicitly selecting the first object to make this
+        # happen,
+        uselist=False,
+        viewonly=True,
+    )
+
+    @property
+    def has_meta(self):
+        return any([self.keywords])
 
 
 class File(db.Model):

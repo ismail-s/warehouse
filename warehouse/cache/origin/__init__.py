@@ -13,8 +13,36 @@
 import collections
 import functools
 
+import jinja2
+
+from pyramid.request import Request
+from pyramid.threadlocal import get_current_request
+
 from warehouse import db
 from warehouse.cache.origin.interfaces import IOriginCache
+from warehouse.cache.http import add_vary_callback
+
+
+@jinja2.contextfunction
+def esi_include(ctx, path, cookies=False):
+    request = ctx.get("request") or get_current_request()
+
+    if request.registry.settings.get("warehouse.prevent_esi", False):
+        return ""
+
+    try:
+        cacher = request.find_service(IOriginCache)
+    except ValueError:
+        subreq = Request.blank(path)
+        if cookies:
+            subreq.cookies.update(request.cookies)
+            request.add_response_callback(add_vary_callback("Cookie"))
+        resp = request.invoke_subrequest(subreq, use_tweens=True)
+        include = resp.body.decode(resp.charset)
+    else:
+        include = cacher.esi_include(request, path, cookies=cookies)
+
+    return jinja2.Markup(include)
 
 
 @db.listens_for(db.Session, "after_flush")
@@ -49,7 +77,8 @@ def execute_purge(config, session):
     cacher.purge(purges)
 
 
-def origin_cache(seconds, keys=None):
+def origin_cache(seconds, keys=None, stale_while_revalidate=None,
+                 stale_if_error=None):
     if keys is None:
         keys = []
 
@@ -58,17 +87,22 @@ def origin_cache(seconds, keys=None):
         def wrapped(context, request):
             cache_keys = request.registry["cache_keys"]
 
+            context_keys = []
+            if context.__class__ in cache_keys:
+                context_keys = cache_keys[context.__class__](context).cache
+
             try:
-                key_maker = cache_keys[context.__class__]
                 cacher = request.find_service(IOriginCache)
-            except (KeyError, ValueError):
+            except ValueError:
                 pass
             else:
                 request.add_response_callback(
                     functools.partial(
                         cacher.cache,
-                        sorted(key_maker(context).cache + keys),
+                        sorted(context_keys + keys),
                         seconds=seconds,
+                        stale_while_revalidate=stale_while_revalidate,
+                        stale_if_error=stale_if_error,
                     )
                 )
 
