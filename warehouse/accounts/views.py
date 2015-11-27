@@ -143,16 +143,16 @@ def logout(request, redirect_field_name=REDIRECT_FIELD_NAME):
 
     if request.method == "POST":
         # A POST to the logout view tells us to logout. There's no form to
-        # validate here becuse there's no data. We should be protected against
+        # validate here because there's no data. We should be protected against
         # CSRF attacks still because of the CSRF framework, so users will still
         # need a post body that contains the CSRF token.
         headers = forget(request)
 
-        # When crossing an authentication boundry we want to create a new
+        # When crossing an authentication boundary we want to create a new
         # session identifier. We don't want to keep any information in the
         # session when going from authenticated to unauthenticated because
-        # user's generally expect that logging out is a desctructive action
-        # that erases all of their private data. However if we don't clear the
+        # user's generally expect that logging out is a destructive action
+        # that erases all of their private data. However, if we don't clear the
         # session then another user can use the computer after them, log in to
         # their account, and then gain access to anything sensitive stored in
         # the session for the original user.
